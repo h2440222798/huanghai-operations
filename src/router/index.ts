@@ -1,7 +1,8 @@
-import { createRouter, createWebHistory } from 'vue-router'
+import { createRouter, createWebHashHistory } from 'vue-router'
 
 const router = createRouter({
-  history: createWebHistory(import.meta.env.BASE_URL),
+  // 作品托管在子路径下，用 hash 路由避免服务器 rewrite 依赖
+  history: createWebHashHistory(),
   routes: [
     {
       path: '/',
