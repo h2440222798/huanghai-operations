@@ -34,6 +34,8 @@ import { ArenaField } from './arena'
 import { AreaMarker, BlastWave, BombProp, type Owner } from './markers'
 import { AllySquad } from './squad'
 import { getModeMeta } from './meta'
+import { getModBalance, type ModBalance } from './mods/balance'
+import { emitModEvent } from './mods/bus'
 import type { BombState, CaptureState, FeedKind, GameModeId, MatchHud, MatchPhase, MatchResult, WaveState } from './types'
 import { CF_ENEMY_HP_SCALE, PICKUP_CHANCE, TOTAL_WAVES, enemyAlias, makeWavePlan, type WavePlan } from './waves'
 
@@ -114,6 +116,11 @@ export class MatchEngine {
   private audio: CfAudio
   private rng: Random = createRandom(20261109)
   private disposed = false
+
+  /** 开局时锁定的创意工坊数值系数：中途装的 Mod 下一局生效 */
+  private balance: ModBalance = getModBalance()
+  /** 上一次向 Mod 广播 hud 事件的引擎时间 */
+  private lastModHudAt = -1
 
   private phase: MatchPhase = 'briefing'
   private clock = CLASSIC_TIME
@@ -411,6 +418,15 @@ export class MatchEngine {
       default:
         break
     }
+    emitModEvent('match:start', {
+      mode: this.mode,
+      modeName: this.meta.name,
+      loadout: {
+        primary: this.inventory.primary.spec.id,
+        secondary: this.inventory.secondary.spec.id,
+        melee: this.inventory.melee.spec.id,
+      },
+    })
     this.pushHud()
   }
 
@@ -475,7 +491,7 @@ export class MatchEngine {
       this.player.health < 100 &&
       this.elapsed - this.lastHurtAt > 8
     ) {
-      this.player.health = Math.min(100, this.player.health + 3.5 * dt)
+      this.player.health = Math.min(100, this.player.health + 3.5 * this.balance.playerRegen * dt)
     }
 
     if (this.hitMarker > 0) this.hitMarker = Math.max(0, this.hitMarker - dt)
@@ -813,7 +829,7 @@ export class MatchEngine {
 
   private nextWave() {
     this.challenge.wave += 1
-    this.challenge.plan = makeWavePlan(this.challenge.wave)
+    this.challenge.plan = makeWavePlan(this.challenge.wave, this.balance.waveCount)
     this.challenge.queue = []
     for (const group of this.challenge.plan.groups) {
       for (let i = 0; i < group.count; i += 1) {
@@ -836,6 +852,13 @@ export class MatchEngine {
     this.audio.waveStart(this.challenge.plan.isBossWave)
     this.banner(this.challenge.plan.label, `${this.challenge.plan.total} 只怪兽来袭`, this.challenge.plan.isBossWave ? 'warn' : 'info')
     this.feed(`${this.challenge.plan.label} · ${this.challenge.plan.total} 只怪兽来袭`, this.challenge.plan.isBossWave ? 'warn' : 'info')
+    emitModEvent('wave:start', {
+      wave: this.challenge.wave,
+      total: TOTAL_WAVES,
+      isBossWave: this.challenge.plan.isBossWave,
+      label: this.challenge.plan.label,
+      count: this.challenge.plan.total,
+    })
     this.pushHud()
   }
 
@@ -953,9 +976,9 @@ export class MatchEngine {
   ) {
     const enemy = this.enemies.spawn(
       kind,
-      (options.hpScale ?? 1) * CF_ENEMY_HP_SCALE,
-      options.speedScale ?? 1,
-      options.damageScale ?? 1,
+      (options.hpScale ?? 1) * CF_ENEMY_HP_SCALE * this.balance.enemyHealth,
+      (options.speedScale ?? 1) * this.balance.enemySpeed,
+      (options.damageScale ?? 1) * this.balance.enemyDamage,
     )
     if (options.at) {
       enemy.group.position.copy(options.at)
@@ -965,7 +988,7 @@ export class MatchEngine {
 
   private allyDamageEnemy(id: number, amount: number) {
     this.allyDamage.add(id)
-    this.enemies.damage(id, amount, 'body')
+    this.enemies.damage(id, amount * this.balance.allyDamage, 'body')
   }
 
   private onEnemyKilled(enemy: EnemyEntity, headshot: boolean) {
@@ -977,6 +1000,14 @@ export class MatchEngine {
       this.feed(`友军击杀 ${enemyAlias(this.mode, enemy.spec.id)}`, 'info')
       if (this.mode === 'classic') this.classic.ally += 1
       if (this.mode === 'delta') this.delta.enemy = Math.max(0, this.delta.enemy - 2)
+      emitModEvent('enemy:killed', {
+        mode: this.mode,
+        kind: enemy.spec.id,
+        name: enemyAlias(this.mode, enemy.spec.id),
+        headshot: false,
+        byAlly: true,
+        streak: 0,
+      })
       return
     }
 
@@ -1001,12 +1032,21 @@ export class MatchEngine {
     const alias = enemyAlias(this.mode, enemy.spec.id)
     this.feed(`[${this.activeSpec.name}] ${headshot ? '爆头击杀' : '击杀'} ${alias}${headshot ? ' 💥' : ''}`, headshot ? 'headshot' : 'kill')
     this.effects.killBurst(enemy.group.position.clone().setY(1.1), '#ff7a4d')
+    emitModEvent('enemy:killed', {
+      mode: this.mode,
+      kind: enemy.spec.id,
+      name: alias,
+      headshot,
+      byAlly: false,
+      streak: this.streak,
+    })
 
     const roll = this.rng.next()
+    const pickupScale = this.balance.pickupChance
     let kind: PickupKind | null = null
-    if (roll < PICKUP_CHANCE.health) kind = 'health'
-    else if (roll < PICKUP_CHANCE.health + PICKUP_CHANCE.armor) kind = 'armor'
-    else if (roll < PICKUP_CHANCE.health + PICKUP_CHANCE.armor + PICKUP_CHANCE.ammo) kind = 'ammo'
+    if (roll < PICKUP_CHANCE.health * pickupScale) kind = 'health'
+    else if (roll < (PICKUP_CHANCE.health + PICKUP_CHANCE.armor) * pickupScale) kind = 'armor'
+    else if (roll < (PICKUP_CHANCE.health + PICKUP_CHANCE.armor + PICKUP_CHANCE.ammo) * pickupScale) kind = 'ammo'
     if (kind) this.effects.spawnPickup(enemy.group.position.clone(), kind, '#4da3ff')
   }
 
@@ -1028,7 +1068,7 @@ export class MatchEngine {
 
   private hurtPlayer(rawDamage: number, source: string) {
     if (this.phase !== 'combat' || this.player.dead) return
-    this.hurtPlayerRaw(rawDamage, source)
+    this.hurtPlayerRaw(rawDamage * this.balance.enemyDamage, source)
   }
 
   private hurtPlayerRaw(rawDamage: number, source: string) {
@@ -1038,6 +1078,12 @@ export class MatchEngine {
     this.player.armor = result.armor
     this.audio.hurt()
     this.options.onDamage()
+    emitModEvent('player:damaged', {
+      amount: Math.round(rawDamage),
+      source,
+      health: Math.round(this.player.health),
+      armor: Math.round(this.player.armor),
+    })
     if (source === '近战' && this.rng.next() < 0.3) this.feed(`感染体撕咬 -${Math.round(rawDamage)}`, 'warn')
     if (this.player.health <= 0) {
       this.player.health = 0
@@ -1480,7 +1526,7 @@ export class MatchEngine {
       lines.push({ label: '最终票数', value: `蓝 ${Math.ceil(this.delta.ally)} : 红 ${Math.ceil(this.delta.enemy)}` })
     }
 
-    this.options.onEnd({
+    const summary: MatchResult = {
       mode: this.mode,
       victory,
       score: this.stats.score,
@@ -1491,7 +1537,9 @@ export class MatchEngine {
       time: Math.round(this.elapsed),
       detail,
       lines,
-    })
+    }
+    emitModEvent('match:end', summary)
+    this.options.onEnd(summary)
     this.pushHud()
   }
 
@@ -1569,6 +1617,11 @@ export class MatchEngine {
 
     this.fillModeHud(hud)
     this.options.onHud(hud)
+    // Mod 的 hud 事件限制在 5Hz，避免每帧把所有订阅者都唤醒
+    if (this.elapsed - this.lastModHudAt >= 0.2) {
+      this.lastModHudAt = this.elapsed
+      emitModEvent('hud', hud)
+    }
   }
 
   private buildRadar(): MatchHud['radar'] {

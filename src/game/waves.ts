@@ -27,13 +27,15 @@ export interface WavePlan {
   total: number
 }
 
-export function makeWavePlan(wave: number): WavePlan {
+/** 生成某一波的配比；`countScale` 供创意工坊调整每波敌人数量（1 = 原始配比） */
+export function makeWavePlan(wave: number, countScale = 1): WavePlan {
   const w = cfClamp(Math.round(wave), 1, TOTAL_WAVES)
   const isBossWave = w % 10 === 0
   const hpScale = 1 + (w - 1) * 0.1
   const speedScale = Math.min(1 + (w - 1) * 0.025, 1.55)
   const damageScale = 1 + (w - 1) * 0.055
-  const countBase = 4 + Math.floor(w * 1.3)
+  const scale = cfClamp(countScale, 0.5, 3)
+  const countBase = (4 + Math.floor(w * 1.3)) * scale
 
   const groups: SpawnGroup[] = []
   const bruteCount = Math.max(3, Math.round(countBase * (isBossWave ? 0.45 : 0.72)))

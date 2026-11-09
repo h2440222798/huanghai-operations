@@ -246,7 +246,8 @@ function percent(value: number | null | undefined) {
   pointer-events: none;
   font-family: 'HarmonyOS Sans SC', 'Microsoft YaHei', system-ui, sans-serif;
   color: #e8eef6;
-  --accent: #f2b544;
+  /* 创意工坊主题只改这一个变量，HUD 其余配色保持不变 */
+  --accent: var(--hh-accent, #f2b544);
 }
 
 .scorebar {
@@ -691,7 +692,7 @@ function percent(value: number | null | undefined) {
   to { opacity: 1; transform: translateX(0); }
 }
 
-.feed__item--kill { border-right-color: #f2b544; }
+.feed__item--kill { border-right-color: var(--accent); }
 .feed__item--headshot { border-right-color: #ff5a3c; color: #ffd7c9; }
 .feed__item--streak { border-right-color: #ff7ad9; color: #ffc9ef; }
 .feed__item--warn { border-right-color: #ff5a4d; color: #ffb4ac; }
@@ -901,7 +902,7 @@ function percent(value: number | null | undefined) {
   backdrop-filter: blur(6px);
 }
 
-.vitals--warn { border-left-color: #f2b544; }
+.vitals--warn { border-left-color: var(--hh-danger, #f2b544); }
 .vitals--danger { border-left-color: #ff5a4d; }
 
 .vitals__row {

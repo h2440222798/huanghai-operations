@@ -574,6 +574,85 @@ export const CF_WEAPON_BY_ID: Record<string, CfWeaponSpec> = Object.fromEntries(
   CF_WEAPONS.map((weapon) => [weapon.id, weapon]),
 )
 
+/* ============================== Mod 武器注册表 ============================== */
+
+/**
+ * 创意工坊武器与内置表隔离：`CF_WEAPONS` 保持不可变，Mod 注册结果只存在这两张表里，
+ * 由 {@link getCfWeapon} / {@link weaponsForSlot} 统一叠加。这样即使 Mod 注册失败或重复，
+ * 也不会污染内置配置。
+ */
+const MOD_WEAPONS = new Map<string, CfWeaponSpec>()
+const MOD_PATCHES = new Map<string, Partial<CfWeaponSpec>>()
+
+/** Mod 可以调整的武器字段白名单：只开放手感与外观，`id` / `slot` 等结构字段不可改 */
+export const CF_WEAPON_PATCH_KEYS = [
+  'name',
+  'cn',
+  'desc',
+  'damage',
+  'rpm',
+  'magazine',
+  'reserve',
+  'reloadTime',
+  'drawTime',
+  'spread',
+  'moveSpread',
+  'airSpread',
+  'bloom',
+  'bloomMax',
+  'bloomRecovery',
+  'kick',
+  'armorPenetration',
+  'headshotMultiplier',
+  'legMultiplier',
+  'falloffStart',
+  'falloffEnd',
+  'minDamageRatio',
+  'pellets',
+  'zoomFov',
+  'zoomSpread',
+  'zoomRecoil',
+  'zoomMove',
+  'spinUp',
+] as const
+
+export function isBuiltinCfWeapon(id: string): boolean {
+  return Object.prototype.hasOwnProperty.call(CF_WEAPON_BY_ID, id)
+}
+
+/** 查找武器（先找 Mod 注册表，再找内置表），不叠加补丁 */
+export function findCfWeapon(id: string | null | undefined): CfWeaponSpec | undefined {
+  if (!id) return undefined
+  return MOD_WEAPONS.get(id) ?? CF_WEAPON_BY_ID[id]
+}
+
+export function listModCfWeapons(): CfWeaponSpec[] {
+  return [...MOD_WEAPONS.values()]
+}
+
+export function installModCfWeapon(spec: CfWeaponSpec): void {
+  MOD_WEAPONS.set(spec.id, spec)
+}
+
+export function cfWeaponPatch(id: string): Partial<CfWeaponSpec> | undefined {
+  return MOD_PATCHES.get(id)
+}
+
+export function setCfWeaponPatch(id: string, patch: Partial<CfWeaponSpec>): void {
+  MOD_PATCHES.set(id, { ...(MOD_PATCHES.get(id) ?? {}), ...patch })
+}
+
+/** 以某个内置武器为模板，深拷贝出一份可修改的规格（供 Mod 只写少量字段） */
+export function cfWeaponTemplate(slot: CfSlot): CfWeaponSpec {
+  const id = slot === 'primary' ? 'ak47' : slot === 'secondary' ? 'deagle' : 'kukri'
+  return JSON.parse(JSON.stringify(CF_WEAPON_BY_ID[id])) as CfWeaponSpec
+}
+
+function applyCfWeaponPatch(spec: CfWeaponSpec): CfWeaponSpec {
+  const patch = MOD_PATCHES.get(spec.id)
+  return patch ? { ...spec, ...patch } : spec
+}
+
 export const CF_SLOT_ORDER: readonly CfSlot[] = ['primary', 'secondary', 'melee']
 
 export interface CfLoadout {
@@ -591,12 +670,14 @@ export const CF_LOADOUT_SLOTS: readonly { slot: CfSlot; label: string; en: strin
 ]
 
 export function weaponsForSlot(slot: CfSlot): CfWeaponSpec[] {
-  return CF_WEAPONS.filter((weapon) => weapon.slot === slot && weapon.selectable)
+  return [...CF_WEAPONS, ...MOD_WEAPONS.values()]
+    .filter((weapon) => weapon.slot === slot && weapon.selectable)
+    .map(applyCfWeaponPatch)
 }
 
 export function getCfWeapon(id: string | null | undefined, fallbackSlot?: CfSlot): CfWeaponSpec {
-  const weapon = id ? CF_WEAPON_BY_ID[id] : undefined
-  if (weapon) return weapon
+  const weapon = findCfWeapon(id)
+  if (weapon) return applyCfWeaponPatch(weapon)
   if (fallbackSlot) {
     return weaponsForSlot(fallbackSlot)[0] ?? CF_WEAPONS[0]!
   }
@@ -606,7 +687,7 @@ export function getCfWeapon(id: string | null | undefined, fallbackSlot?: CfSlot
 /** 把 UI 传来的（可能不完整的）选择修正成一套合法配枪 */
 export function resolveCfLoadout(partial?: Partial<CfLoadout> | null): CfLoadout {
   const pick = (slot: CfSlot, id: string | undefined): string => {
-    const weapon = id ? CF_WEAPON_BY_ID[id] : undefined
+    const weapon = findCfWeapon(id)
     if (weapon && weapon.slot === slot) return weapon.id
     return weaponsForSlot(slot)[0]?.id ?? DEFAULT_CF_LOADOUT[slot]
   }

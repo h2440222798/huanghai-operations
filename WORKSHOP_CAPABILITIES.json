@@ -1,0 +1,38 @@
+[
+  {
+    "id": "weapon.register",
+    "name": "新增武器",
+    "description": "向大厅配枪列表加入新的主武器、副武器或近战武器，可定义伤害、射速、弹匣、散布、后坐、开镜倍率、枪身配色与程序化音色。不能新增武器槽位、不能替换内置武器的模型文件、不能改变开火与换弹的核心流程。",
+    "multiplayer": "local"
+  },
+  {
+    "id": "weapon.tune",
+    "name": "武器数值微调",
+    "description": "修改内置或其它 Mod 武器的伤害、射速、弹匣、换弹、散布、后坐与显示名称，用于做平衡补丁或换皮文本。不能修改武器 ID 与槽位，不能删除武器，不能绕过伤害与护甲结算。",
+    "multiplayer": "local"
+  },
+  {
+    "id": "balance.tune",
+    "name": "对局数值调整",
+    "description": "以倍率调整敌人血量、伤害、移速、玩家脱战回血、补给掉落、AI 队友伤害与挑战模式每波敌人数量，用于做难度或爽局 Mod。不能修改胜利条件、回合数、倒计时、票数与据点规则。",
+    "multiplayer": "local"
+  },
+  {
+    "id": "hud.theme",
+    "name": "HUD 主题配色",
+    "description": "通过一组受限 CSS 变量改变 HUD 主色与危险提示色。不能写任意 CSS、不能改布局、不能隐藏或伪造血量、弹药、比分、目标与提示文字。",
+    "multiplayer": "local"
+  },
+  {
+    "id": "event.subscribe",
+    "name": "对局事件订阅",
+    "description": "订阅开局、击杀、波次、受伤、结算与约 5Hz 的 HUD 快照，驱动 Mod 自己的叠层、音效或统计。payload 是只读快照，不能借事件修改对局状态、不能拦截或取消事件。",
+    "multiplayer": "local"
+  },
+  {
+    "id": "hud.notice",
+    "name": "运行时文字提示",
+    "description": "在屏幕底部显示一条最多 140 字的纯文本提示，可指定信息、警告、成功三种语气与显示时长。不支持 HTML、图片或按钮，同屏最多 4 条，不能遮挡或替代游戏自身的提示与结算面板。",
+    "multiplayer": "local"
+  }
+]

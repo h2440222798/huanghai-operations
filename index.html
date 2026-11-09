@@ -2,12 +2,46 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8">
-    <link rel="icon" href="/favicon.ico">
+    <link rel="icon" href="./favicon.ico">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>黄海行动 · HUANGHAI OPERATIONS</title>
+    <!-- VibeHub 创意工坊 Loader：必须先于游戏入口执行，beforeStart 才能等到启动前 Mod -->
+    <script src="https://gamesvibe.app/workshop/loader/v1.js"></script>
+    <style>
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+        background: #05070a;
+        color: #e8eef6;
+      }
+      .boot {
+        position: fixed;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        align-content: center;
+        font-family: 'HarmonyOS Sans SC', 'Microsoft YaHei', system-ui, sans-serif;
+        letter-spacing: 3px;
+        font-size: 15px;
+        text-align: center;
+      }
+      .boot span {
+        display: block;
+        margin-top: 10px;
+        font-size: 11px;
+        letter-spacing: 2px;
+        color: #6f8296;
+      }
+    </style>
   </head>
   <body>
-    <div id="app"></div>
+    <div id="app">
+      <div class="boot">
+        黄海行动
+        <span>正在建立战场…</span>
+      </div>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
