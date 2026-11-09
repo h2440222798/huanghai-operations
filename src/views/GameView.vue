@@ -6,6 +6,7 @@ import GameHud from '@/components/GameHud.vue'
 import ModeIcon from '@/components/ModeIcon.vue'
 import { GAME_MODES } from '@/game/meta'
 import type { MatchEngine } from '@/game/match'
+import { setGameplayActive } from '@/game/mods/context'
 import type { FeedEntry, FeedKind, GameModeId, MatchHud, MatchResult } from '@/game/types'
 import { getCfWeapon } from '@/game/world/cf'
 import { CampusApp } from '@/game/world/three/campus'
@@ -150,10 +151,12 @@ async function restart() {
 }
 
 onMounted(() => {
+  setGameplayActive(true)
   void bootstrap()
 })
 
 onBeforeUnmount(() => {
+  setGameplayActive(false)
   teardown()
 })
 

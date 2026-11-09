@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 
 import ModeIcon from '@/components/ModeIcon.vue'
 import { GAME_MODES, MODE_ORDER } from '@/game/meta'
+import { modRegistryVersion } from '@/game/mods/version'
 import { CF_LOADOUT_SLOTS, cfWeaponRating, getCfWeapon, weaponsForSlot, type CfSlot } from '@/game/world/cf'
 import type { GameModeId, LoadoutChoice } from '@/game/types'
 import { useGameStore } from '@/stores/game'
@@ -17,10 +18,25 @@ const activeSlot = ref<CfSlot>('primary')
 const meta = computed(() => GAME_MODES[mode.value])
 const modes = MODE_ORDER.map((id) => GAME_MODES[id])
 
-const slotGroups = CF_LOADOUT_SLOTS.map((group) => ({
-  ...group,
-  weapons: weaponsForSlot(group.slot),
-}))
+/** 依赖注册表版本，创意工坊运行期新增的武器会自动出现在列表里 */
+const slotGroups = computed(() => {
+  void modRegistryVersion.value
+  return CF_LOADOUT_SLOTS.map((group) => ({
+    ...group,
+    weapons: weaponsForSlot(group.slot),
+  }))
+})
+
+interface WorkshopChip {
+  mods: number
+}
+
+const workshopChip = computed<WorkshopChip | null>(() => {
+  void modRegistryVersion.value
+  const workshop = window.VibeHubWorkshop
+  if (!workshop) return null
+  return { mods: workshop.getEnabledMods?.().length ?? 0 }
+})
 
 const currentWeapon = computed(() => getCfWeapon(store.loadout[activeSlot.value as keyof LoadoutChoice]))
 const rating = computed(() => cfWeaponRating(currentWeapon.value))
@@ -71,6 +87,9 @@ function enterBattle() {
         </div>
       </div>
       <div class="topbar__tags">
+        <span v-if="workshopChip" class="workshop-chip" :class="{ 'is-idle': workshopChip.mods === 0 }">
+          创意工坊 · {{ workshopChip.mods > 0 ? `${workshopChip.mods} 个 Mod` : '未启用' }}
+        </span>
         <span>校园实景 1.2 km²</span>
         <span>5 种模式</span>
         <span>CF 枪械手感</span>
@@ -319,6 +338,18 @@ function enterBattle() {
   border: 1px solid rgba(140, 176, 210, 0.22);
   background: rgba(16, 24, 34, 0.6);
   padding: 6px 10px;
+}
+
+.topbar__tags .workshop-chip {
+  color: #ffd8a8;
+  border-color: rgba(242, 181, 68, 0.42);
+  background: rgba(242, 181, 68, 0.1);
+}
+
+.topbar__tags .workshop-chip.is-idle {
+  color: #7e93a8;
+  border-color: rgba(140, 176, 210, 0.18);
+  background: rgba(16, 24, 34, 0.4);
 }
 
 .body {

@@ -38,6 +38,17 @@ npm run build      # 类型检查 + 生产构建
 | E | 爆破模式安放 C4 |
 | Esc | 暂停（释放指针） |
 
+## 创意工坊
+
+本作已接入 VibeHub 创意工坊（Mod API v1）。玩家可以用 Mod 新增武器、微调数值、换 HUD 配色、
+订阅对局事件与弹提示，完整约定见 [WORKSHOP.md](./WORKSHOP.md)，能力目录见
+[WORKSHOP_CAPABILITIES.json](./WORKSHOP_CAPABILITIES.json)。
+
+- 公共入口：`window.HuangHai`，每个 Mod 用 `HuangHai.forMod(id)` 绑定身份
+- 启动顺序：`index.html` 先加载官方 Loader → `main.ts` 建立 API → 等 `beforeStart`
+  → 挂载游戏 → `markGameReady()` → 等 `afterStart`
+- 联机策略：`mods-disabled`（本作目前是纯单人）
+
 ## 目录结构
 
 ```
@@ -50,6 +61,7 @@ src/
 │  ├─ waves.ts          挑战模式 30 波配比 + 各模式敌人称呼 + 掉落概率
 │  ├─ meta.ts           模式元数据（首页 / 简报面板共用）
 │  ├─ types.ts          HUD / 结算 / 雷达的数据契约
+│  ├─ mods/             创意工坊：API 组装、武器注册、数值系数、主题、事件总线、诊断
 │  └─ world/
 │     ├─ three/         原校园场景（campus / 建筑 / 天空 / 水面 / 知新楼 / 第一人称控制器）
 │     ├─ cf/            CF 枪械表 / 弹道数学 / 第一人称枪模 / 程序化枪声
@@ -98,4 +110,14 @@ window.__match.objectivePoints     // 爆破点 / 据点坐标
 window.__match.teleportTo(x, z)    // 把玩家送到坐标
 window.__match.debugFinish(true)   // 直接结算，验收结算面板
 window.__match.enemyManager.clear()// 清场，验证波次推进
+```
+
+工坊 API 在开发模式下同样可用，可手动模拟一次 Mod 注册：
+
+```js
+const mod = window.HuangHai.forMod('dev.test')
+mod.registerWeapon({ id: 'dev.test', name: 'DEV', slot: 'primary', damage: 50 })
+mod.patchBalance({ enemyHealth: 0.5 })
+mod.notice('dev mod loaded')
+window.HuangHai.getErrors()        // 注册失败 / 回调报错
 ```
