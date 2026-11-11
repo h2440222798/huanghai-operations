@@ -16,6 +16,29 @@ npm run build      # 类型检查 + 生产构建
 
 需要支持 WebGL2 的桌面浏览器；进入对局后点击「开始战斗」会锁定鼠标。
 
+## 画面：一条自建的电影级管线
+
+场景不再直接画到画布，而是走一条 HDR 管线（`src/game/world/three/cinematic/`）：
+
+```
+场景(线性 HDR) ─┬─ 半分辨率 SSAO ─────────────┐
+                ├─ 屏幕空间太阳光束(半分辨率) ─┤
+                ├─ 泛光链(5 级降采样 + 帐篷升采样) ─┤→ 合成 ─→ FXAA ─→ 画布
+                └─ 深度 ─ 大气透视 ───────────┘
+```
+
+| 模块 | 做了什么 |
+|---|---|
+| `sky.ts` | 程序化天空：米氏光晕、被太阳烧穿的程序化云海、日轮 / 月轮 / 星点，全部在着色器里算，可随昼夜连续变化，也能直接烘成环境贴图 |
+| `cinematic/env.ts` | 把天空穹顶渲进 cube RT 再走 `PMREMGenerator`，IBL 里带着云和太阳方向；比原先"画一张渐变 canvas"高一个档次，玻璃和金属终于有环境反射 |
+| `cinematic/post.ts` | SSAO + 太阳光束 + 泛光 + AgX/ACES 混合色调映射 + 拆分调色 + 色散 / 耀斑 / 暗角 / 颗粒 + FXAA |
+| 大气透视 | three 的均匀雾做不出逆光地平线那层暖光，所以颜色按**深度 + 视线与太阳夹角**解析计算：近处清透、远处融进暖雾 |
+| 阴影 | 4096² PCF，阴影框缩到 ±185m 并跟着玩家走，配 SSAO 补接触阴影；枪模画进同一张 HDR 图，和世界共享曝光与泛光 |
+
+质量档位按视口宽度自动选（`low / medium / high / ultra`），并对帧时间做自适应：掉到 26ms 以上先降内部分辨率（最低 0.62×），而不是掉帧。
+
+想看没有后期的版本做对比：`window.__campusApp.setCinematic(false)`（开发模式）。
+
 ## 五个模式
 
 | 模式 | 目标 | 时长 | 关键规则 |
@@ -99,6 +122,9 @@ src/
 | 枪模动画 / 枪声音色 | `src/game/world/cf/viewmodel.ts` / `audio.ts` |
 | 据点光圈与标签 | `src/game/markers.ts` |
 | HUD 布局与配色 | `src/components/GameHud.vue` |
+| 天空 / 云 / 昼夜配色 | `src/game/world/three/sky.ts` + `campus.ts` 的 `PALETTE` |
+| 曝光 / 泛光 / 调色 / 雾 | `campus.ts` 的 `grade` + `cinematic/post.ts` |
+| 画质档位与采样数 | `cinematic/post.ts` 的 `QUALITY_SETTINGS` |
 
 ## 开发调试
 

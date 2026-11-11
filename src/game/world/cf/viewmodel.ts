@@ -59,6 +59,7 @@ export class CfViewModel {
   private weapon = new THREE.Group()
   private spec: CfWeaponSpec
   private parts: CfParts | null = null
+  private lights: THREE.Light[] = []
 
   private materials: THREE.Material[] = []
   private geometries: THREE.BufferGeometry[] = []
@@ -69,6 +70,20 @@ export class CfViewModel {
     flame: THREE.CanvasTexture
     thunder: THREE.CanvasTexture
     glow: THREE.CanvasTexture
+  }
+
+  /**
+   * 整体压一档枪模灯光。
+   * 电影级管线把它画进 HDR 场景，和世界共享曝光；原来那套"枪比场景亮一档"
+   * 的布光在 AgX 下会发灰发飘，需要按场景重新配平。
+   */
+  setLightScale(k: number) {
+    this.lights.forEach((l, i) => {
+      const base = (l.userData.baseIntensity as number | undefined) ?? l.intensity
+      // 轮廓光保留得多一些：逆光场景里枪身靠这圈边缘光才不至于糊成一团剪影
+      l.intensity = base * (i === this.lights.length - 1 ? Math.min(1, k * 1.7) : k)
+    })
+    this.scene.environmentIntensity = 1.5 * k * k
   }
 
   private preset = PRESETS.rifle!
@@ -107,7 +122,8 @@ export class CfViewModel {
     this.root.add(this.weapon)
 
     // 三点布光：CF 的枪模通常比场景亮一档，才能看清金属高光
-    this.scene.add(new THREE.HemisphereLight('#dcecff', '#1b2028', 1.55))
+    const hemi = new THREE.HemisphereLight('#dcecff', '#1b2028', 1.55)
+    this.scene.add(hemi)
     const key = new THREE.DirectionalLight('#fff1da', 2.95)
     key.position.set(-1.1, 1.5, 1.2)
     this.scene.add(key)
@@ -117,6 +133,8 @@ export class CfViewModel {
     const rim = new THREE.DirectionalLight('#ffb070', 1.35)
     rim.position.set(0.5, -0.5, -1.1)
     this.scene.add(rim)
+    this.lights = [hemi, key, fill, rim]
+    for (const l of this.lights) l.userData.baseIntensity = l.intensity
 
     if (renderer) {
       const env = createStudioEnvironment(renderer)

@@ -221,6 +221,8 @@ export class MatchEngine {
     this.effects = new BattleEffects(this.scene)
     this.audio = new CfAudio()
     this.viewmodel = new CfViewModel(this.renderer)
+    // 电影级管线里枪模进了 HDR 场景，灯光压一档才不会比世界亮一截
+    this.viewmodel.setLightScale(0.52)
 
     this.muzzleLight = new THREE.PointLight('#ffcf8a', 0, 22, 2)
     this.scene.add(this.muzzleLight)
@@ -516,6 +518,17 @@ export class MatchEngine {
       this.hudTimer = 0
       this.pushHud()
     }
+  }
+
+  /**
+   * 枪模叠加层交给后期渲染器，画进同一张 HDR 场景。
+   * 这样枪身的曝光、泛光、色调和世界完全一致，而不是一张贴纸。
+   */
+  get overlay(): { scene: THREE.Scene; camera: THREE.PerspectiveCamera } | null {
+    if (this.disposed) return null
+    const dom = this.renderer.domElement
+    this.viewmodel.resize(dom.clientWidth, dom.clientHeight)
+    return { scene: this.viewmodel.scene, camera: this.viewmodel.camera }
   }
 
   renderOverlay() {
