@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 
 import { makeBarTexture, makeSoftDisc } from './battleTextures'
+import { createSaltlineCreature, preloadSaltlineCreatures, type CreatureInstance } from './saltlineCreatures'
 import { surfaceMaps } from './surfaceTextures'
 import { clamp, createRandom, type Random } from './math'
 import { ENEMY_SPECS } from './planets'
@@ -57,6 +58,8 @@ export interface EnemyEntity {
   losTimer: number
   hasLineOfSight: boolean
   bodyHeight: number
+  /** saltline 烘焙模型的骨骼动画实例（程序化模型为 null） */
+  creature?: CreatureInstance | null
 }
 
 interface Materials {
@@ -74,6 +77,7 @@ interface EnemyModel {
   arm: THREE.Object3D | null
   bodyHeight: number
   flash?: THREE.Sprite
+  creature?: CreatureInstance | null
 }
 
 const FIRE_RANGE: Record<EnemyKindId, number> = { grunt: 26, skirmisher: 22, brute: 2.6, drone: 24 }
@@ -104,6 +108,8 @@ export class EnemyManager {
     this.healthTexture = makeBarTexture()
     this.flashTexture = makeSoftDisc('#ffb060', 0.4)
     for (const kind of Object.keys(ENEMY_SPECS) as EnemyKindId[]) this.materials.set(kind, this.createMaterials(ENEMY_SPECS[kind]))
+    // 后台加载烘焙好的机械犬 / 侦察机，加载完之前先走程序化模型
+    void preloadSaltlineCreatures()
   }
 
   private createMaterials(spec: EnemySpec): Materials {
@@ -202,6 +208,54 @@ export class EnemyManager {
       return mesh
     }
     const box = (w: number, h: number, d: number, material: THREE.Material) => new THREE.Mesh(new THREE.BoxGeometry(w, h, d), material)
+
+    // ── saltline 烘焙模型优先：机械犬接管近战重甲单位，四旋翼接管空中单位 ──
+    // 模型未加载完时回落到下面的程序化建模，玩法不受影响
+    const creatureKind = kind === 'brute' ? 'hound' : kind === 'drone' ? 'gull' : null
+    if (creatureKind) {
+      const creature = createSaltlineCreature(creatureKind, {
+        height: spec.height,
+        radius: spec.bodyRadius,
+        hoverCenterY: spec.flying ? 2.15 : undefined,
+      })
+      if (creature) {
+        group.add(creature.root)
+
+        // 透明命中球：参与射线检测但不可见
+        const hitMaterial = new THREE.MeshBasicMaterial({
+          transparent: true,
+          opacity: 0,
+          depthWrite: false,
+        })
+        const bodyHit = this.buildHitbox(
+          new THREE.SphereGeometry(Math.max(spec.bodyRadius, creature.radius) * 1.05, 12, 10),
+          hitMaterial,
+          new THREE.Vector3(0, spec.height * 0.52, 0),
+          'body',
+          enemyId,
+        )
+        bodyHit.castShadow = false
+        group.add(bodyHit)
+        hitMeshes.push(bodyHit)
+
+        const headHit = this.buildHitbox(
+          new THREE.SphereGeometry(spec.headRadius * 1.2, 10, 8),
+          hitMaterial,
+          new THREE.Vector3(0, spec.height * (spec.flying ? 0.5 : 0.88), spec.bodyRadius * 0.95),
+          'head',
+          enemyId,
+        )
+        headHit.castShadow = false
+        group.add(headHit)
+        hitMeshes.push(headHit)
+
+        gunTip = new THREE.Object3D()
+        gunTip.position.set(0, spec.height * (spec.flying ? 0.45 : 0.62), spec.bodyRadius * 1.5)
+        group.add(gunTip)
+
+        return { group, hitMeshes, gunTip, arm, bodyHeight: spec.height, creature }
+      }
+    }
 
     if (kind === 'drone') {
       const core = new THREE.Mesh(new THREE.SphereGeometry(0.38, 16, 12), materials.armor)
@@ -493,6 +547,7 @@ export class EnemyManager {
       hitFlash: 0,
       gunTip: model.gunTip,
       arm: model.arm,
+      creature: model.creature ?? null,
       hitMeshes: model.hitMeshes,
       healthBar,
       flash: model.flash ?? null,
@@ -725,6 +780,24 @@ export class EnemyManager {
     if (!spec.flying) {
       enemy.bobPhase += delta * (spec.speed * 2.6)
       enemy.group.position.y += Math.abs(Math.sin(enemy.bobPhase)) * 0.035
+    }
+
+    // 烘焙模型的骨骼动画：步态 / 旋翼 / 炮塔朝向
+    if (enemy.creature) {
+      const moving = direction.lengthSq() > 0.0001
+      // 传给云台的必须是「相对躯干」的偏角：躯干已经 lookAt 过玩家了，
+      // 再把世界朝向塞进去会把颈子拧一整圈
+      const targetYaw = Math.atan2(playerPosition.x - position.x, playerPosition.z - position.z)
+      const relativeYaw = Math.atan2(
+        Math.sin(targetYaw - enemy.group.rotation.y),
+        Math.cos(targetYaw - enemy.group.rotation.y),
+      )
+      enemy.creature.update(delta, {
+        moving,
+        speed: Math.min(1, spec.speed / 2.6),
+        aimYaw: relativeYaw,
+        attack: enemy.attackAnimation,
+      })
     }
 
     return { distance, activeRange }
