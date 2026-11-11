@@ -80,7 +80,7 @@ async function bootstrap() {
   try {
     const app = new CampusApp(container.value, {})
     app.setAutoTime(false)
-    app.setTimeOfDay(15.6)
+    app.setTimeOfDay(17.62)
     app.setSensitivity(store.sensitivity)
     appRef.value = app
     const match = app.startMatch(

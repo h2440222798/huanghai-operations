@@ -6,11 +6,11 @@ import { buildSdustCampus } from './sdust'
 import { collectWindowMaterials, type BuildingData } from './buildings'
 import { CampusControls, type CampusMode, type CircleCollider } from './controls'
 import {
-  createCampusEnvironment,
   prepareCampusMaterials,
   setCampusMaterialDetail,
-  type CampusEnvironment,
 } from './materials'
+import { createSkyEnvironment, type SkyEnvironment } from './cinematic/env'
+import { CinematicPost, type PostQuality } from './cinematic/post'
 import { ZhixinBuildingScene, type RoomData, type CourseSchedule } from './zhixinBuilding'
 import { MatchEngine, type MatchCallbacks } from '../../match'
 import type { CfLoadout } from '../cf'
@@ -84,7 +84,7 @@ export function resolveCampusQuality(
 
   return {
     pixelRatio: Math.min(normalizedPixelRatio, compact ? 1.25 : 2),
-    shadowMapSize: Math.min(compact ? 1024 : 2048, textureLimit),
+    shadowMapSize: Math.min(compact ? 2048 : 4096, textureLimit),
   }
 }
 
@@ -95,6 +95,37 @@ const smoothstep = (a: number, b: number, x: number) => {
 
 const lerpColor = (out: THREE.Color, a: string, b: string, t: number) =>
   out.set(a).lerp(new THREE.Color(b), THREE.MathUtils.clamp(t, 0, 1))
+
+/**
+ * 昼夜调色板：三种状态（日 / 黄昏 / 夜）之间做双段插值。
+ * 颜色按 sRGB 书写，THREE.Color 会自动转到线性空间，交给 HDR 管线。
+ */
+const PALETTE = {
+  sunDay: new THREE.Color('#fff3e0'),
+  sunDusk: new THREE.Color('#ff8f42'),
+  sunNight: new THREE.Color('#9fb6e0'),
+  zenDay: new THREE.Color('#2c6cb8'),
+  zenDusk: new THREE.Color('#26375f'),
+  zenNight: new THREE.Color('#060c1a'),
+  horDay: new THREE.Color('#e6f0f8'),
+  horDusk: new THREE.Color('#ff7326'),
+  horNight: new THREE.Color('#0a1424'),
+  horAwayDay: new THREE.Color('#b9d3e6'),
+  horAwayDusk: new THREE.Color('#6e7180'),
+  horAwayNight: new THREE.Color('#091120'),
+  groundDay: new THREE.Color('#3d3b32'),
+  groundDusk: new THREE.Color('#241d1a'),
+  groundNight: new THREE.Color('#080a0f'),
+  cloudDarkDay: new THREE.Color('#8fa2b8'),
+  cloudDarkDusk: new THREE.Color('#3a3f50'),
+  cloudDarkNight: new THREE.Color('#0b1220'),
+  cloudLitDay: new THREE.Color('#fff1dc'),
+  cloudLitDusk: new THREE.Color('#ffa25c'),
+  cloudLitNight: new THREE.Color('#1a2130'),
+  hemiDusk: new THREE.Color('#9a6240'),
+  waterDeepNight: new THREE.Color('#04121c'),
+  waterShallowNight: new THREE.Color('#0a2630'),
+}
 
 /** 主应用：场景 / 相机 / 昼夜 / 交互 / 渲染循环（支持多校园布局） */
 export class CampusApp {
@@ -116,13 +147,37 @@ export class CampusApp {
   private lampLights: { light: THREE.PointLight; bulb: THREE.Mesh }[]
   private windowMats: THREE.MeshStandardMaterial[] = []
 
-  private timeOfDay = 10.5
+  private timeOfDay = 17.4
   private autoTime = true
+  private sunDir = new THREE.Vector3(0, 1, 0)
+  private moonDir = new THREE.Vector3(0, -1, 0)
   private raycaster = new THREE.Raycaster()
   private pointerDownPos: { x: number; y: number } | null = null
   private selectionRing: THREE.Mesh
-  private environment: CampusEnvironment
+  private environment: SkyEnvironment
   private materialDetail = true
+  private cinematic = true
+
+  /** 电影级后期（HDR + SSAO + 光束 + 泛光 + AgX） */
+  private post: CinematicPost
+  private postQuality: PostQuality
+  private basePixelRatio = 1
+  /** 自适应分辨率：帧率掉下来时按比例降内部分辨率 */
+  private renderScale = 1
+  private frameMs = 16
+  private scaleCooldown = 0
+  /** 供后期使用的大气 / 曝光参数，由 applyTime 维护 */
+  private grade = {
+    fogColor: new THREE.Color('#9fb4c6'),
+    fogSun: new THREE.Color('#ffbe86'),
+    fogDensity: 0.0016,
+    fogHeight: 70,
+    exposure: 0.62,
+    bloom: 0.5,
+    shafts: 0.5,
+    night: 0,
+    dusk: 0,
+  }
 
   private minimapCamera: THREE.OrthographicCamera
   private minimapVisible = true
@@ -154,7 +209,12 @@ export class CampusApp {
     this.layout = CAMPUS_LAYOUTS[this.campus]
 
     // ---- 渲染器 ----
-    this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' })
+    // 抗锯齿交给后期 FXAA：整个场景先渲染进 HDR 目标，MSAA 在这里用不上
+    this.renderer = new THREE.WebGLRenderer({
+      antialias: false,
+      powerPreference: 'high-performance',
+      stencil: false,
+    })
     prepareCampusMaterials(this.renderer)
     const quality = resolveCampusQuality(
       container.clientWidth,
@@ -163,10 +223,13 @@ export class CampusApp {
     )
     this.renderer.setPixelRatio(quality.pixelRatio)
     this.renderer.setSize(container.clientWidth, container.clientHeight)
+    this.basePixelRatio = quality.pixelRatio
     this.renderer.shadowMap.enabled = true
+    // 半径 > 1 的 PCF 采样，配合后期 SSAO 出具"接触阴影"的感觉
     this.renderer.shadowMap.type = THREE.PCFShadowMap
-    this.renderer.toneMapping = THREE.ACESFilmicToneMapping
-    this.renderer.toneMappingExposure = 0.95
+    // 色调映射在后期合成里手动做（AgX + ACES 混合），这里必须关掉
+    this.renderer.toneMapping = THREE.NoToneMapping
+    this.renderer.outputColorSpace = THREE.LinearSRGBColorSpace
     container.appendChild(this.renderer.domElement)
 
     // ---- 相机 ----
@@ -179,17 +242,26 @@ export class CampusApp {
     this.camera.position.set(...this.layout.camera.position)
     this.camera.lookAt(...this.layout.camera.target)
 
-    // ---- 雾 ----
-    this.scene.fog = new THREE.Fog('#cfe5f5', 380, 1600)
+    // ---- 后期质量档位 ----
+    const compact = container.clientWidth <= 820
+    this.postQuality = compact ? 'medium' : 'ultra'
+    this.post = new CinematicPost(this.renderer, this.camera, this.postQuality)
+    this.post.setSize(
+      container.clientWidth * quality.pixelRatio,
+      container.clientHeight * quality.pixelRatio,
+    )
+
+    // 雾由后期按深度解析计算（three 的均匀雾做不出逆光地平线那层暖光）
+    this.scene.fog = null
 
     // ---- 天空与光照 ----
     this.sky = createSky(this.scene)
-    this.environment = createCampusEnvironment(this.renderer)
+    this.environment = createSkyEnvironment()
     this.sky.sunLight.shadow.mapSize.set(quality.shadowMapSize, quality.shadowMapSize)
-    this.sky.sunLight.shadow.camera.top = 560
-    this.sky.sunLight.shadow.camera.bottom = -560
-    this.sky.sunLight.shadow.camera.left = -560
-    this.sky.sunLight.shadow.camera.right = 560
+    this.sky.sunLight.shadow.camera.top = 185
+    this.sky.sunLight.shadow.camera.bottom = -185
+    this.sky.sunLight.shadow.camera.left = -185
+    this.sky.sunLight.shadow.camera.right = 185
     this.sky.sunLight.shadow.camera.updateProjectionMatrix()
 
     // ---- 校园布局（青岛黄海学院 / 山东科技大学） ----
@@ -253,6 +325,10 @@ export class CampusApp {
 
     // ---- 初始状态 ----
     this.applyTime(this.timeOfDay)
+    if (import.meta.env.DEV) {
+      // 开发期调试句柄：可在控制台里直接调 setTimeOfDay / setPostQuality
+      ;(window as unknown as { __campusApp?: CampusApp }).__campusApp = this
+    }
     this.renderer.setAnimationLoop(this.tick)
   }
 
@@ -271,78 +347,102 @@ export class CampusApp {
     this.autoTime = v
   }
 
-  private applyTime(t: number) {
+  private applyTime(t: number, dt = 0.016) {
     const theta = ((t - 6) / 12) * Math.PI
     const e = Math.sin(theta) // 太阳高度 [-1, 1]
-    const sunDir = new THREE.Vector3(Math.cos(theta), e, -0.28).normalize()
-    const moonDir = new THREE.Vector3(-Math.cos(theta), -e, 0.3).normalize()
+    // 太阳沿校园主轴线（-Z）东升西落：黄昏时正好挂在主路尽头，
+    // 逆光、长影、地平线暖雾才成立（原先太阳在侧面，画面永远是平的）
+    const sunDir = this.sunDir.set(Math.cos(theta) * 0.38, e, -0.92).normalize()
+    const moonDir = this.moonDir.set(-Math.cos(theta) * 0.38, -e, -0.92).normalize()
 
-    const dayF = smoothstep(0.02, 0.32, e)
-    const nightF = smoothstep(0.04, 0.28, -e)
-    const duskGlow = THREE.MathUtils.clamp(1 - Math.abs(e) / 0.24, 0, 1)
+    // 日落前后给足光：太阳只要还在地平线上就要有强逆光，而不是迅速变暗
+    const dayF = smoothstep(-0.01, 0.26, e)
+    const nightF = smoothstep(0.03, 0.24, -e)
+    const duskGlow = THREE.MathUtils.clamp(1 - Math.abs(e) / 0.34, 0, 1)
     // 夜间设施（路灯/窗户）在黄昏时分就逐渐点亮
-    const lampF = THREE.MathUtils.clamp(nightF + duskGlow * 0.75, 0, 1)
+    const lampF = THREE.MathUtils.clamp(nightF + duskGlow * 0.8, 0, 1)
 
     // 太阳 / 月亮方向光
-    this.sky.sunLight.position.copy(sunDir).multiplyScalar(480)
-    this.sky.sunLight.intensity = dayF * 2.05 + duskGlow * 1.15
-    lerpColor(this.sky.sunLight.color, '#fff2dd', '#ff9a4d', duskGlow)
-    this.sky.moonLight.position.copy(moonDir).multiplyScalar(480)
-    this.sky.moonLight.intensity = nightF * 0.55
+    this.sky.sunLight.intensity = dayF * 2.9 + duskGlow * 1.55
+    lerpColor(this.sky.sunLight.color, '#fff3e0', '#ff8f42', duskGlow)
+    this.sky.moonLight.intensity = nightF * 0.62
+    lerpColor(this.sky.moonLight.color, '#9fb6e0', '#8fa8d8', dayF)
 
-    // 天体位置
-    this.sky.sunMesh.position.copy(sunDir).multiplyScalar(880)
-    this.sky.sunMesh.visible = e > -0.08
-    this.sky.moonMesh.position.copy(moonDir).multiplyScalar(880)
-    this.sky.moonMesh.visible = e < 0.08
+    // 半球环境光（补一点，避免背光面死黑；IBL 会再补一层）
+    this.sky.hemiLight.intensity = 0.30 + dayF * 0.20 + duskGlow * 0.16
+    lerpColor(this.sky.hemiLight.color, '#16202f', '#9dc0ea', dayF)
+    this.sky.hemiLight.color.lerp(PALETTE.hemiDusk, duskGlow * 0.4)
+    lerpColor(this.sky.hemiLight.groundColor, '#0a0d12', '#4a4030', dayF)
 
-    // 半球环境光
-    this.sky.hemiLight.intensity = 0.27 + dayF * 0.5 + duskGlow * 0.45
-    lerpColor(this.sky.hemiLight.color, '#1c2b48', '#bcd8ff', dayF)
-    this.sky.hemiLight.color.lerp(new THREE.Color('#9a6240'), duskGlow * 0.35)
-    lerpColor(this.sky.hemiLight.groundColor, '#121820', '#5c7050', dayF)
+    // ---- 天空 ----
+    const u = this.sky.uniforms
+    u.uSunDir.value.copy(sunDir)
+    u.uMoonDir.value.copy(moonDir)
+    u.uSunCol.value
+      .copy(PALETTE.sunNight)
+      .lerp(PALETTE.sunDusk, Math.max(duskGlow, dayF * 0.7))
+      .lerp(PALETTE.sunDay, dayF * 0.9)
+    u.uZen.value
+      .copy(PALETTE.zenNight)
+      .lerp(PALETTE.zenDusk, Math.max(duskGlow * 0.8, dayF * 0.75))
+      .lerp(PALETTE.zenDay, dayF)
+    u.uHorAway.value
+      .copy(PALETTE.horAwayNight)
+      .lerp(PALETTE.horAwayDusk, Math.max(duskGlow * 0.7, dayF * 0.6))
+      .lerp(PALETTE.horAwayDay, dayF)
+    u.uHor.value
+      .copy(PALETTE.horNight)
+      .lerp(PALETTE.horDusk, THREE.MathUtils.clamp(duskGlow * 0.9 + dayF * 0.15, 0, 1))
+      .lerp(PALETTE.horDay, dayF * 0.7)
+    u.uGround.value
+      .copy(PALETTE.groundNight)
+      .lerp(PALETTE.groundDusk, Math.max(duskGlow * 0.7, dayF * 0.5))
+      .lerp(PALETTE.groundDay, dayF)
+    u.uCloudDark.value
+      .copy(PALETTE.cloudDarkNight)
+      .lerp(PALETTE.cloudDarkDusk, Math.max(duskGlow, dayF * 0.8))
+      .lerp(PALETTE.cloudDarkDay, dayF * 0.9)
+    u.uCloudLit.value
+      .copy(PALETTE.cloudLitNight)
+      .lerp(PALETTE.cloudLitDusk, Math.max(duskGlow, dayF * 0.5))
+      .lerp(PALETTE.cloudLitDay, dayF * 0.8)
+    u.uNight.value = nightF
+    u.uSunDisk.value = e > -0.035 ? 1 : 0
+    u.uCloud.value = 0.52 + duskGlow * 0.08
+    u.uHaze.value = 0.32 + duskGlow * 0.45 + dayF * 0.12
 
-    // 天空穹顶渐变 + 暮光
-    lerpColor(this.sky.uniforms.uTopColor.value, '#0a1226', '#3f7fce', dayF)
-    this.sky.uniforms.uTopColor.value.lerp(new THREE.Color('#31406e'), duskGlow * 0.45)
-    lerpColor(this.sky.uniforms.uHorizonColor.value, '#141b30', '#cfe5f5', dayF)
-    this.sky.uniforms.uHorizonColor.value.lerp(new THREE.Color('#ff8e4d'), duskGlow * 0.85)
-    this.sky.uniforms.uSunDir.value.copy(sunDir)
-    this.sky.uniforms.uSunGlow.value = duskGlow * 1.1 + dayF * 0.12
+    // ---- 后期：大气 / 曝光 / 光效 ----
+    // 逆光时地平线是暖的，背光侧偏冷；后期的雾色也按这个规律取
+    this.grade.fogColor
+      .copy(u.uHorAway.value)
+      .lerp(u.uZen.value, 0.22)
+      .multiplyScalar(0.95)
+    this.grade.fogSun.copy(u.uHor.value).multiplyScalar(1.55).lerp(u.uSunCol.value, 0.3)
+    this.grade.fogDensity = 0.00070 + duskGlow * 0.00150 + nightF * 0.0004
+    this.grade.fogHeight = 65 + dayF * 25
+    this.grade.exposure = 0.98 + nightF * 0.62 + duskGlow * 0.22
+    this.grade.bloom = 0.40 + duskGlow * 0.26 + nightF * 0.12
+    this.grade.shafts = 0.14 + duskGlow * 0.55 + nightF * 0.08
+    this.grade.night = nightF
+    this.grade.dusk = duskGlow
 
-    // 雾色跟随地平线
-    const fogColor = this.sky.uniforms.uHorizonColor.value
-      .clone()
-      .lerp(this.sky.uniforms.uTopColor.value, 0.25)
-    ;(this.scene.fog as THREE.Fog).color.copy(fogColor)
-
-    // PBR 环境反射：用当前天空 / 地面颜色生成 PMREM 环境贴图
-    this.envGround
-      .set('#5f7a4c')
-      .lerp(new THREE.Color('#141a20'), Math.max(nightF, duskGlow * 0.25))
-    const envIntensity = this.environment.update(this.scene, t, dayF, {
-      top: this.sky.uniforms.uTopColor.value,
-      horizon: this.sky.uniforms.uHorizonColor.value,
-      ground: this.envGround,
-      sunDir: e > -0.02 ? sunDir : moonDir,
-      sunColor: this.sky.sunLight.color,
-      dusk: duskGlow,
+    // ---- IBL：把当前天空烘成环境贴图（节流重算） ----
+    const envTex = this.environment.update(this.renderer, this.sky, {
       night: nightF,
+      dusk: duskGlow,
+      dt,
     })
-    if (!this.materialDetail) this.scene.environmentIntensity = envIntensity * 0.3
+    if (envTex && this.scene.environment !== envTex) this.scene.environment = envTex
+    this.scene.environmentIntensity = (this.materialDetail ? 1 : 0.5) * (0.55 + 0.30 * dayF + 1.85 * duskGlow)
 
-    // 星空 / 云
-    ;(this.sky.stars.material as THREE.PointsMaterial).opacity = nightF
-    this.sky.cloudMaterial.opacity = 0.16 + dayF * 0.5
-    lerpColor(this.sky.cloudMaterial.color, '#3a4560', '#ffffff', dayF)
-
+    // ---- 星空 / 云 ----
     // 路灯与建筑窗户
     for (const lamp of this.lampLights) {
       lamp.light.intensity = lampF * 42
       ;((lamp.bulb as THREE.Mesh).material as THREE.MeshStandardMaterial).emissiveIntensity =
         lampF * 2.4
     }
-    for (const m of this.windowMats) m.emissiveIntensity = lampF * 1.5
+    for (const m of this.windowMats) m.emissiveIntensity = lampF * 0.8
 
     // 水面反射的天空色与光源方向；夜晚压暗水体和高光
     const waterNight = THREE.MathUtils.clamp(1 - dayF * 1.25, 0, 1)
@@ -350,21 +450,20 @@ export class CampusApp {
       const water = this.waters[i]!
       const base = this.waterBases[i]
       ;(water.material.uniforms.uSkyColor!.value as THREE.Color)
-        .copy(fogColor)
-        .lerp(new THREE.Color('#9ec7e8'), dayF * 0.6)
+        .copy(u.uHor.value)
+        .lerp(u.uZen.value, 0.35)
       if (base) {
         ;(water.material.uniforms.uDeepColor!.value as THREE.Color)
           .copy(base.deep)
-          .lerp(new THREE.Color('#04121c'), waterNight)
+          .lerp(PALETTE.waterDeepNight, waterNight)
         ;(water.material.uniforms.uShallowColor!.value as THREE.Color)
           .copy(base.shallow)
-          .lerp(new THREE.Color('#0a2630'), waterNight)
+          .lerp(PALETTE.waterShallowNight, waterNight)
       }
       ;(water.material.uniforms.uSunDir!.value as THREE.Vector3).copy(e > -0.02 ? sunDir : moonDir)
       water.material.uniforms.uNight!.value = Math.max(nightF, duskGlow * 0.6)
     }
   }
-
   /* ------------------------- 功能开关 ------------------------- */
 
   setLabelsVisible(v: boolean) {
@@ -385,6 +484,11 @@ export class CampusApp {
     this.materialDetail = v
     setCampusMaterialDetail(v)
     this.applyTime(this.timeOfDay)
+  }
+
+  /** 关掉电影级后期（极低端设备或排查问题用），退回直接渲染 */
+  setCinematic(v: boolean) {
+    this.cinematic = v
   }
 
   private get orbitControls() {
@@ -800,16 +904,25 @@ export class CampusApp {
     const t = this.timer.getElapsed()
 
     if (this.autoTime) {
-      this.timeOfDay = (this.timeOfDay + dt * 0.2) % 24
-      this.applyTime(this.timeOfDay)
+      // 八分钟一整天：比原来慢 4 倍，避免对局中光线变化太快
+      this.timeOfDay = (this.timeOfDay + dt * 0.05) % 24
+      this.applyTime(this.timeOfDay, dt)
       this.timeTimer += dt
       if (this.timeTimer > 0.4) {
         this.timeTimer = 0
         this.callbacks.onTime?.(this.timeOfDay)
       }
     }
+    this.sky.update(dt, this.camera)
 
-    this.sky.update(dt)
+    // 方向光跟着玩家走：260m 的阴影框在 2K/4K 贴图上依然保持足够精度
+    const px = this.camera.position
+    this.sky.sunLight.position.copy(px).addScaledVector(this.sunDir, 320)
+    this.sky.sunLight.target.position.copy(px)
+    this.sky.sunLight.target.updateMatrixWorld()
+    this.sky.moonLight.position.copy(px).addScaledVector(this.moonDir, 320)
+    this.sky.moonLight.target.position.copy(px)
+    this.sky.moonLight.target.updateMatrixWorld()
     for (const water of this.waters) water.material.uniforms.uTime!.value = t
     for (const update of this.updates) update(t)
     this.controls.update(this.camera, dt)
@@ -838,24 +951,65 @@ export class CampusApp {
       this.minimapMarker.rotation.y = Math.atan2(-d.x, -d.z)
     }
 
-    this.renderer.setViewport(0, 0, this.container.clientWidth, this.container.clientHeight)
-    this.renderer.setScissorTest(false)
-    this.renderer.render(this.scene, this.camera)
+    // ---- 渲染：HDR 场景 → SSAO / 光束 / 泛光 → AgX 合成 → FXAA ----
+    this.updateRenderScale(dt)
+    if (!this.cinematic) {
+      this.renderer.setViewport(0, 0, this.container.clientWidth, this.container.clientHeight)
+      this.renderer.toneMapping = THREE.ACESFilmicToneMapping
+      this.renderer.toneMappingExposure = 0.95
+      this.renderer.outputColorSpace = THREE.SRGBColorSpace
+      this.renderer.setScissorTest(false)
+      this.renderer.render(this.scene, this.camera)
+      if (this.match) this.match.renderOverlay()
+      this.renderer.toneMapping = THREE.NoToneMapping
+      this.renderer.outputColorSpace = THREE.LinearSRGBColorSpace
+    } else {
+      this.post.render(this.scene, this.camera, {
+      time: t,
+      dt,
+      sunDir: this.sunDir,
+      sunColor: this.sky.uniforms.uSunCol.value,
+      sunOn: this.sky.uniforms.uSunDisk.value,
+      fogColor: this.grade.fogColor,
+      fogSun: this.grade.fogSun,
+      fogDensity: this.grade.fogDensity,
+      fogHeight: this.grade.fogHeight,
+      exposure: this.grade.exposure,
+      bloom: this.grade.bloom,
+      shafts: this.grade.shafts,
+      vignette: 0.30,
+      grain: 0.020,
+      saturation: 1.04,
+      fade: 0,
+      night: this.grade.night,
+      }, this.match ? this.match.overlay : null)
+    }
 
     // 小地图（右下角视口，固定全校园视角）
     if (this.minimapVisible) {
       const w = this.container.clientWidth
       const vw = 236
       const vh = 169
+      const prevTone = this.renderer.toneMapping
+      const prevSpace = this.renderer.outputColorSpace
+      const skyVisible = this.sky.group.visible
+      this.sky.group.visible = false
+      this.renderer.toneMapping = THREE.ACESFilmicToneMapping
+      this.renderer.toneMappingExposure = 1.0
+      this.renderer.outputColorSpace = THREE.SRGBColorSpace
       this.renderer.setScissorTest(true)
       this.renderer.setScissor(w - vw - 14, 14, vw, vh)
       this.renderer.setViewport(w - vw - 14, 14, vw, vh)
+      this.renderer.clearDepth()
       this.renderer.render(this.scene, this.minimapCamera)
       this.renderer.setScissorTest(false)
+      this.renderer.setViewport(0, 0, w, this.container.clientHeight)
+      this.renderer.toneMapping = prevTone
+      this.renderer.outputColorSpace = prevSpace
+      this.sky.group.visible = skyVisible
     }
 
-    // 守卫战第一人称枪模叠加层（最后画，保证不被小地图覆盖）
-    if (this.match) this.match.renderOverlay()
+    // 第一人称枪模已经在前面的 HDR 阶段画进场景，这里不再单独叠加
 
     // FPS 统计
     this.frameCount++
@@ -878,7 +1032,32 @@ export class CampusApp {
     if (w === 0 || h === 0) return
     this.camera.aspect = w / h
     this.camera.updateProjectionMatrix()
+    this.renderer.setPixelRatio(this.basePixelRatio * this.renderScale)
     this.renderer.setSize(w, h)
+    const pr = this.renderer.getPixelRatio()
+    this.post.setSize(w * pr, h * pr)
+  }
+
+  /**
+   * 自适应分辨率：后期链比原来贵不少，帧率掉下来时先降内部分辨率，
+   * 而不是让玩家看幻灯片。抬升留了更长的冷却，避免来回抖。
+   */
+  private updateRenderScale(dt: number) {
+    this.frameMs = this.frameMs * 0.92 + Math.min(dt, 0.2) * 1000 * 0.08
+    if (this.disposed || !this.post) return
+    this.scaleCooldown -= dt
+    if (this.scaleCooldown > 0) return
+
+    const cap = Math.min(1, this.post.renderScaleCap / Math.max(0.001, this.basePixelRatio))
+    if (this.frameMs > 26 && this.renderScale > 0.62) {
+      this.renderScale = Math.max(0.62, this.renderScale - 0.09)
+      this.scaleCooldown = 1.6
+      this.resize()
+    } else if (this.frameMs < 13.5 && this.renderScale < cap) {
+      this.renderScale = Math.min(cap, this.renderScale + 0.05)
+      this.scaleCooldown = 4.0
+      this.resize()
+    }
   }
 
   dispose() {
@@ -892,6 +1071,7 @@ export class CampusApp {
     this.timer.dispose()
     this.controls.dispose()
     this.environment.dispose()
+    this.post.dispose()
     this.zhixinScene?.dispose()
     this.renderer.dispose()
     this.renderer.forceContextLoss()
