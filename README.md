@@ -39,6 +39,34 @@ npm run build      # 类型检查 + 生产构建
 
 想看没有后期的版本做对比：`window.__campusApp.setCinematic(false)`（开发模式）。
 
+## 敌人模型：从参考实现里烘出来的两台机械体
+
+参考的那份 `几猫国产3A大作_V1.html` 里没有任何 glb / 贴图资源，敌人是运行时用代码拼出来的 `SkinnedMesh` + 骨骼。
+所以这里的模型是「烘」出来的，不是拷来的：用 CDP 把参考页跑在 headless Chrome 里，遍历场景图导出顶点缓冲
+（position / normal / color / skinIndex / skinWeight）、骨骼层级与逆绑定矩阵，再自己拼成 glTF 2.0 二进制。
+
+| 资源 | 规格 | 接管的单位 |
+|---|---|---|
+| `public/models/saltline/hound.glb` | 5.2 万顶点、20 根骨骼、PBR 未贴图（顶点色） | `brute` 重装撕裂者 |
+| `public/models/saltline/gull.glb` | 4.1 万顶点、13 根骨骼 | `drone` 浮游炮台 |
+
+加载与动效都在 `src/game/world/arena/saltlineCreatures.ts`，`EnemyManager` 里一行分派：
+`kind === 'brute' ? 'hound' : kind === 'drone' ? 'gull' : null`，其余两类（步兵 / 猎手）保留原程序化建模。
+模型没加载完或 404 时自动回落到原模型，玩法不受影响。
+
+![战场上的机械犬与四旋翼](docs/screenshots/creatures.png)
+
+几个必须处理的地方：
+
+- **HDR 顶点色**：原模型的顶点色峰值到 6~11，用来做自发光面板。直接搬会在这条泛光链上糊成一个光球，
+  所以拆成 `color`（钳到 1）+ 自定义属性 `aGlow`（超出部分），在 `onBeforeCompile` 里累加进 `totalEmissiveRadiance`。
+  注意 `emissive` 必须留黑 —— three 的 `totalEmissiveRadiance` 初值就是 emissive 本身。
+- **包围盒离群点**：无人机网格里混着一段沿 +Z 拉到 9 个单位的枪口曳光，直接量包围盒会把整机缩成一个点。
+  改成按「质心中位距离」剔一次离群点再量。
+- **缩放基准**：地面单位按身高换算，飞行单位按旋翼跨度换算（无人机机身很扁，按身高换算会小得看不见）。
+- **骨骼动画**：步行 / 小跑四足步态、旋翼旋转、云台与炮塔跟踪、近战扑咬，都是按骨骼名直接驱动的
+  （`thighFL`/`shinFL`…、`rotor0`…、`gimbalYaw`、`neck`），不用动画片段。
+
 ## 五个模式
 
 | 模式 | 目标 | 时长 | 关键规则 |
@@ -88,7 +116,7 @@ src/
 │  └─ world/
 │     ├─ three/         原校园场景（campus / 建筑 / 天空 / 水面 / 知新楼 / 第一人称控制器）
 │     ├─ cf/            CF 枪械表 / 弹道数学 / 第一人称枪模 / 程序化枪声
-│     └─ arena/         敌军 AI、命中特效、敌兵规格（从 starbattle 裁剪）
+│     └─ arena/         敌军 AI、命中特效、敌兵规格（从 starbattle 裁剪）、烘焙模型加载与骨骼动效
 ├─ components/
 │  ├─ GameHud.vue       准星 / 血甲 / 弹药 / 计分 / 雷达 / 爆破倒计时 / 据点面板 / 击杀播报
 │  └─ ModeIcon.vue      五个模式的矢量图标
